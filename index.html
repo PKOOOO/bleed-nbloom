@@ -1,0 +1,792 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FLOW — Luna's Menstrual Cycle Adventure</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden}
+body{background:#e8e0d0;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:'Georgia',serif}
+#wrap{position:relative;width:640px;height:480px;overflow:hidden;border-radius:8px;box-shadow:6px 6px 0 rgba(0,0,0,0.18);transform-origin:center center}
+canvas{display:block;position:absolute;top:0;left:0}
+#gc{z-index:1}
+#oc{z-index:2;pointer-events:none}
+#ui{position:absolute;top:0;left:0;width:640px;height:480px;z-index:3}
+.scr{position:absolute;top:0;left:0;width:640px;height:480px;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.scr.on{display:flex}
+.pbtn{display:inline-block;padding:13px 32px;font-family:'Georgia',serif;font-size:17px;font-weight:700;color:#fff;cursor:pointer;border-radius:3px;box-shadow:3px 3px 0 rgba(0,0,0,0.22);letter-spacing:1px;border:none;transition:transform .12s,box-shadow .12s}
+.pbtn:hover{transform:translateY(-2px) scale(1.04) rotate(-0.5deg);box-shadow:4px 6px 0 rgba(0,0,0,0.25)}
+.pbtn:active{transform:translateY(1px) scale(.98);box-shadow:1px 1px 0 rgba(0,0,0,0.25)}
+.qbtn{display:block;width:420px;margin:8px auto;padding:13px 18px;font-family:'Georgia',serif;font-size:17px;color:#444;cursor:pointer;border-radius:6px;border:2px solid rgba(0,0,0,0.12);background:rgba(255,255,255,0.9);text-align:left;transition:transform .1s,background .15s,border-color .15s}
+.qbtn:hover{transform:scale(1.02);background:#fff}
+.qbtn.right{background:#c8f0c8;border-color:#2e7d32;color:#1b5e20}
+.qbtn.wrong{background:#f8cccc;border-color:#c0392b;color:#7d1b1b}
+#mute{position:absolute;top:8px;right:8px;z-index:6;width:34px;height:34px;border:none;border-radius:50%;background:rgba(255,255,255,0.8);box-shadow:2px 2px 0 rgba(0,0,0,0.15);cursor:pointer;font-size:16px;line-height:34px;text-align:center;padding:0}
+#mute:hover{background:#fff}
+@keyframes pop{0%{transform:scale(.6);opacity:0}60%{transform:scale(1.08)}100%{transform:scale(1);opacity:1}}
+.popin{animation:pop .35s ease-out both}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="gc" width="640" height="480"></canvas>
+  <canvas id="oc" width="640" height="480"></canvas>
+  <button id="mute" title="Mute / Unmute (M)">🔊</button>
+  <div id="ui">
+    <div class="scr on" id="s-title"></div>
+    <div class="scr" id="s-cut"></div>
+    <div class="scr" id="s-quiz"></div>
+    <div class="scr" id="s-dead"></div>
+    <div class="scr" id="s-win"></div>
+  </div>
+</div>
+<script>
+const W=640,H=480;
+const gc=document.getElementById('gc'),g=gc.getContext('2d');
+const oc=document.getElementById('oc'),o=oc.getContext('2d');
+
+/* ════════════════════════════════════════════
+   SEEDED RANDOM (for stable paper wobble)
+   ════════════════════════════════════════════ */
+let _s=42;
+function sr(n){_s=(_s*16807)%2147483647;return((_s/2147483647)-.5)*n;}
+function rs(s){_s=s||42;}
+
+/* ════════════════════════════════════════════
+   AUDIO ENGINE (Web Audio — no asset files)
+   ════════════════════════════════════════════ */
+let actx=null,muted=false,master=null;
+function audio(){
+  if(!actx){
+    actx=new (window.AudioContext||window.webkitAudioContext)();
+    master=actx.createGain();master.gain.value=.5;master.connect(actx.destination);
+  }
+  if(actx.state==='suspended')actx.resume();
+  return actx;
+}
+function tone(freq,dur,type,vol,slideTo,delay){
+  if(muted)return;
+  const a=audio(),t=a.currentTime+(delay||0);
+  const osc=a.createOscillator(),gn=a.createGain();
+  osc.type=type||'square';
+  osc.frequency.setValueAtTime(freq,t);
+  if(slideTo)osc.frequency.exponentialRampToValueAtTime(Math.max(slideTo,1),t+dur);
+  gn.gain.setValueAtTime(0.0001,t);
+  gn.gain.exponentialRampToValueAtTime(vol||.12,t+.012);
+  gn.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  osc.connect(gn);gn.connect(master);
+  osc.start(t);osc.stop(t+dur+.02);
+}
+function noise(dur,vol){
+  if(muted)return;
+  const a=audio(),t=a.currentTime;
+  const buf=a.createBuffer(1,a.sampleRate*dur,a.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*(1-i/d.length);
+  const src=a.createBufferSource();src.buffer=buf;
+  const gn=a.createGain();gn.gain.value=vol||.15;
+  const flt=a.createBiquadFilter();flt.type='lowpass';flt.frequency.value=900;
+  src.connect(flt);flt.connect(gn);gn.connect(master);src.start(t);
+}
+const SFX={
+  jump:()=>tone(330,.16,'square',.1,640),
+  djump:()=>tone(440,.15,'triangle',.1,760),
+  orb:()=>tone(880,.08,'sine',.09,1320),
+  orb2:()=>tone(1180,.09,'sine',.07,1500),
+  stomp:()=>{tone(180,.12,'square',.12,60);noise(.12,.1);},
+  hit:()=>{tone(140,.3,'sawtooth',.14,60);noise(.25,.18);},
+  pup:()=>{[523,659,784,1047].forEach((f,i)=>tone(f,.12,'triangle',.1,null,i*.06));},
+  phase:()=>{[523,659,784,1047,1319].forEach((f,i)=>tone(f,.18,'sine',.1,null,i*.08));},
+  win:()=>{[523,659,784,1047,1319,1568].forEach((f,i)=>tone(f,.3,'triangle',.12,null,i*.12));},
+  lose:()=>{[440,392,330,262].forEach((f,i)=>tone(f,.3,'sawtooth',.1,null,i*.14));},
+  right:()=>{[659,988].forEach((f,i)=>tone(f,.16,'sine',.11,null,i*.09));},
+  wrong:()=>tone(196,.3,'sawtooth',.1,140),
+  click:()=>tone(660,.05,'square',.08,990),
+};
+
+/* ── Gentle ambient music: per-phase looping arpeggio ── */
+let musicTimer=null,musicStep=0;
+const SCALES=[
+  [262,330,392,523,392,330], // Menstruation — soft minor-ish
+  [294,370,440,587,440,370], // Follicular — bright
+  [330,415,494,659,494,415], // Ovulation — radiant
+  [277,349,415,554,415,349], // Luteal — warm
+];
+function startMusic(){
+  stopMusic();musicStep=0;
+  musicTimer=setInterval(()=>{
+    if(muted||STATE!=='play')return;
+    const sc=SCALES[phase]||SCALES[0];
+    const f=sc[musicStep%sc.length];
+    tone(f,.32,'triangle',.045);
+    if(musicStep%2===0)tone(f/2,.5,'sine',.035); // bass
+    musicStep++;
+  },300);
+}
+function stopMusic(){if(musicTimer){clearInterval(musicTimer);musicTimer=null;}}
+
+document.getElementById('mute').addEventListener('click',()=>{
+  muted=!muted;document.getElementById('mute').textContent=muted?'🔇':'🔊';
+  if(!muted)audio();
+});
+
+/* ════════════════════════════════════════════
+   PAPER-CUTOUT DRAW HELPERS
+   ════════════════════════════════════════════ */
+function pPath(ctx,x,y,w,h,r){
+  r=r||10; const st=7;
+  ctx.moveTo(x+r,y);
+  for(let i=0;i<=st;i++)ctx.lineTo(x+w/st*i+sr(r),y+sr(r*.4));
+  ctx.lineTo(x+w,y+r);
+  for(let i=0;i<=st;i++)ctx.lineTo(x+w+sr(r*.4),y+h/st*i+sr(r));
+  ctx.lineTo(x+w-r,y+h);
+  for(let i=st;i>=0;i--)ctx.lineTo(x+w/st*i+sr(r),y+h+sr(r*.4));
+  ctx.lineTo(x,y+h-r);
+  for(let i=st;i>=0;i--)ctx.lineTo(x+sr(r*.4),y+h/st*i+sr(r));
+  ctx.closePath();
+}
+function pRect(ctx,x,y,w,h,col,shad,r){
+  rs(Math.round(x*3+y*7+w));
+  if(shad){ctx.fillStyle='rgba(0,0,0,0.14)';ctx.beginPath();pPath(ctx,x+4,y+5,w,h,r);ctx.fill();}
+  ctx.fillStyle=col;ctx.beginPath();pPath(ctx,x,y,w,h,r);ctx.fill();
+}
+
+/* ════════════════════════════════════════════
+   PHASES  (educational data baked in)
+   ════════════════════════════════════════════ */
+const PH=[
+  {name:'Menstruation',days:'Days 1–5',
+   fact:'The uterine lining sheds through the vagina as menstrual flow. A fresh cycle begins.',
+   did:'A typical period releases only about 2–3 tablespoons of blood over several days.',
+   story:"Luna wakes up feeling tender.\nHer body is doing what it's always done —\ncleansing itself. Ready to begin again.",
+   sky:'#fce4ec',h1:'#f8bbd0',h2:'#fde0e8',gnd:'#e8a0b4',gt:'#f48fb1',plat:'#f06292',orb:'#e91e63',mon:'#880e4f',deco:'#f50057',col:'#c2185b'},
+  {name:'Follicular',days:'Days 6–13',
+   fact:'Follicles in the ovaries grow. Rising estrogen rebuilds the uterine lining and lifts energy.',
+   did:'Several follicles start growing, but usually only ONE becomes the dominant egg.',
+   story:"Luna feels a new spark.\nSmall follicles compete inside her ovaries,\neach one reaching for the light.",
+   sky:'#e8f5e9',h1:'#c8e6c9',h2:'#dcf0dd',gnd:'#81c784',gt:'#66bb6a',plat:'#a5d6a7',orb:'#2e7d32',mon:'#1b5e20',deco:'#00c853',col:'#388e3c'},
+  {name:'Ovulation',days:'Day 14',
+   fact:'A surge of LH releases the mature egg from the ovary. This is the fertile window.',
+   did:'The released egg survives only about 12–24 hours, waiting in the fallopian tube.',
+   story:"Today is Luna's peak.\nOne follicle bursts open, releasing an egg.\nShe feels unstoppable.",
+   sky:'#fff8e1',h1:'#ffecb3',h2:'#fff3d0',gnd:'#ffca28',gt:'#ffc107',plat:'#ffe082',orb:'#f57f17',mon:'#e65100',deco:'#ffab00',col:'#f9a825'},
+  {name:'Luteal',days:'Days 15–28',
+   fact:'Progesterone rises to maintain the lining. If no pregnancy occurs, the cycle restarts.',
+   did:'Falling hormones in the late luteal phase can cause PMS — totally normal and temporary.',
+   story:"The cycle nears its close.\nLuna's body holds space for what might come.\nProgesterone cradles the lining like a nest.",
+   sky:'#ede7f6',h1:'#d1c4e9',h2:'#e4ddf2',gnd:'#9575cd',gt:'#7e57c2',plat:'#ce93d8',orb:'#4a148c',mon:'#311b92',deco:'#aa00ff',col:'#7b1fa2'},
+];
+
+/* ── Quiz questions (one per completed phase) ── */
+const QUIZ=[
+  {q:'What is actually leaving the body during menstruation?',
+   a:['The built-up uterine lining','A fully grown baby','Extra muscle tissue'],c:0,
+   why:'The thickened lining (endometrium) sheds because no pregnancy happened.'},
+  {q:'Which hormone rises during the follicular phase?',
+   a:['Insulin','Estrogen','Melatonin'],c:1,
+   why:'Rising estrogen rebuilds the lining and boosts energy and mood.'},
+  {q:'What happens during ovulation?',
+   a:['The period starts','A mature egg is released','The lining thickens most'],c:1,
+   why:'An LH surge releases the egg — the most fertile point of the cycle.'},
+  {q:'A typical full menstrual cycle lasts about…',
+   a:['7 days','About 28 days','A whole year'],c:1,
+   why:'~28 days is average, but anywhere from 21–35 days is perfectly normal.'},
+];
+
+/* ════════════════════════════════════════════
+   STATE
+   ════════════════════════════════════════════ */
+let STATE='title',phase=0,score=0,lives=3,frame=0,worldX=0;
+let hiScore=0,shakeFrames=0,shakeMag=0;
+let player,plats,orbs,monsters,parts,powerups,phaseLen=3600;
+let keys={},keyP={};
+let ambient=[],flash=0,flashCol='#fff',transition=0;
+
+const PUPS=[
+  {type:'speed',col:'#00bcd4',label:'SPD',desc:'Speed boost!'},
+  {type:'shield',col:'#ff9800',label:'SHD',desc:'Invincible!'},
+  {type:'jump',col:'#9c27b0',label:'2xJ',desc:'Double jump!'},
+  {type:'x2',col:'#f44336',label:'x2',desc:'2x points!'},
+];
+
+const GY=H-68;
+
+/* ════════════════════════════════════════════
+   INPUT
+   ════════════════════════════════════════════ */
+document.addEventListener('keydown',e=>{
+  if(e.code==='KeyM'){muted=!muted;document.getElementById('mute').textContent=muted?'🔇':'🔊';if(!muted)audio();}
+  if(!keyP[e.code]){
+    keyP[e.code]=true;
+    if(STATE==='play'){
+      if(e.code==='Space'||e.code==='ArrowUp'){
+        if(player.onGround||player.coyote>0){doJump();}
+        else if(player.pup==='jump'&&player.djAvail){player.vy=-13;player.djAvail=false;SFX.djump();spawnParts(player.x+14,player.y+50,'#9c27b0',8);}
+      }
+    }
+  }
+  keys[e.code]=true;
+  if(['Space','ArrowUp','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();
+});
+document.addEventListener('keyup',e=>{keys[e.code]=false;keyP[e.code]=false;});
+
+function show(id){document.querySelectorAll('.scr').forEach(s=>s.classList.remove('on'));if(id)document.getElementById(id).classList.add('on');}
+
+/* ════════════════════════════════════════════
+   DRAW LUNA (animated paper cutout)
+   ════════════════════════════════════════════ */
+function drawLuna(ctx,x,y,dir,inv,col,runF,jumping){
+  const a=(inv>0&&Math.floor(inv/5)%2===0)?.3:1;
+  ctx.globalAlpha=a;
+  const legSwing=jumping?0:Math.sin(runF*.25)*8;
+  const bodySquash=jumping?(player&&player.vy<-4?1.15:.9):1;
+  const cy=jumping?y-4:y;
+
+  ctx.save();ctx.translate(x+14,cy+32);ctx.scale(dir<0?-1:1,1);ctx.translate(-14,-32);
+
+  ctx.globalAlpha=a*.25;ctx.fillStyle='#000';
+  ctx.beginPath();ctx.ellipse(14,65,14,4,0,0,Math.PI*2);ctx.fill();ctx.globalAlpha=a;
+
+  const lc='#d4a89a';
+  ctx.save();ctx.translate(7,50);ctx.rotate((legSwing*.03));
+  ctx.fillStyle=lc;ctx.fillRect(-4,0,8,14,3);
+  ctx.fillStyle='#3d2a1e';ctx.fillRect(-5,12,10,6);ctx.restore();
+  ctx.save();ctx.translate(19,50);ctx.rotate((-legSwing*.03));
+  ctx.fillStyle=lc;ctx.fillRect(-4,0,8,14,3);
+  ctx.fillStyle='#3d2a1e';ctx.fillRect(-5,12,10,6);ctx.restore();
+
+  ctx.fillStyle=col+'dd';
+  ctx.beginPath();ctx.moveTo(2,34*bodySquash);ctx.lineTo(0,52);ctx.lineTo(28,52);ctx.lineTo(26,34*bodySquash);ctx.closePath();ctx.fill();
+
+  ctx.fillStyle=col;
+  ctx.beginPath();rs(77);pPath(ctx,3,20*bodySquash,22,16/bodySquash,5);ctx.fill();
+
+  ctx.save();ctx.translate(1,26);ctx.rotate(-legSwing*.025);
+  ctx.fillStyle=col+'cc';ctx.beginPath();ctx.ellipse(0,0,4,9,Math.PI/5,0,Math.PI*2);ctx.fill();ctx.restore();
+  ctx.save();ctx.translate(27,26);ctx.rotate(legSwing*.025);
+  ctx.fillStyle=col+'cc';ctx.beginPath();ctx.ellipse(0,0,4,9,-Math.PI/5,0,Math.PI*2);ctx.fill();ctx.restore();
+
+  ctx.fillStyle='#f0c4a8';ctx.fillRect(9,15*bodySquash,9,7);
+
+  const headTilt=jumping?0:Math.sin(runF*.12)*.04;
+  ctx.save();ctx.translate(14,10);ctx.rotate(headTilt);
+  ctx.fillStyle='#f0c4a8';ctx.beginPath();rs(88);pPath(ctx,-13,-10,26,22,6);ctx.fill();
+  ctx.fillStyle='#2d1b0e';ctx.beginPath();ctx.ellipse(0,-7,14,9,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(-13,2,6,11,Math.PI/5,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(13,2,6,11,-Math.PI/5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#1a0a04';ctx.beginPath();ctx.ellipse(0,-11,8,5,0,0,Math.PI*2);ctx.fill();
+  const blink=frame%180<5;
+  ctx.fillStyle='#1a0a04';
+  if(blink){ctx.fillRect(-10,-1,6,2);ctx.fillRect(4,-1,6,2);}
+  else{ctx.beginPath();ctx.ellipse(-7,-1,3,3.5,0,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.ellipse(7,-1,3,3.5,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.ellipse(-6,-2,1.2,1.5,0,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.ellipse(8,-2,1.2,1.5,0,0,Math.PI*2);ctx.fill();}
+  ctx.fillStyle='#f09090';ctx.globalAlpha=a*.45;
+  ctx.beginPath();ctx.ellipse(-9,3,4,2.5,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(9,3,4,2.5,0,0,Math.PI*2);ctx.fill();ctx.globalAlpha=a;
+  ctx.strokeStyle='#c07060';ctx.lineWidth=1.4;ctx.lineCap='round';
+  ctx.beginPath();ctx.arc(0,6,4,jumping?.4:.1,Math.PI-(jumping?.4:.1));ctx.stroke();
+  ctx.restore();
+  ctx.restore();ctx.globalAlpha=1;
+}
+
+/* ════════════════════════════════════════════
+   DRAW MONSTER / ORB / POWER-UP / PLATFORM
+   ════════════════════════════════════════════ */
+function drawMonster(ctx,x,y,w,h,col,fr,type){
+  const bob=Math.sin(fr*.09+x*.01)*3;
+  ctx.fillStyle='rgba(0,0,0,0.14)';ctx.beginPath();ctx.ellipse(x+w/2+3,y+h+4,w/2,4,0,0,Math.PI*2);ctx.fill();
+  rs(Math.round(x+y+13));
+  ctx.fillStyle=col;ctx.beginPath();
+  const pts=12;
+  for(let i=0;i<=pts;i++){const a=(i/pts)*Math.PI*2;const r=w/2+sr(7);if(i===0)ctx.moveTo(x+w/2+Math.cos(a)*r,y+h/2+bob+Math.sin(a)*r);else ctx.lineTo(x+w/2+Math.cos(a)*r,y+h/2+bob+Math.sin(a)*r);}
+  ctx.closePath();ctx.fill();
+  const ey=y+h/2+bob-5;
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.ellipse(x+w/2-7,ey,5,6,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(x+w/2+7,ey,5,6,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=type==='jump'?'#ff0':'#f00';
+  ctx.beginPath();ctx.ellipse(x+w/2-7,ey,2.5,3,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(x+w/2+7,ey,2.5,3,0,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#440';ctx.lineWidth=2;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(x+w/2-11,ey-9);ctx.lineTo(x+w/2-3,ey-7);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x+w/2+11,ey-9);ctx.lineTo(x+w/2+3,ey-7);ctx.stroke();
+  ctx.beginPath();ctx.arc(x+w/2,ey+6,5,0,Math.PI,true);ctx.stroke();
+  if(type==='jump'){ctx.fillStyle='#fff8';ctx.font='bold 9px sans-serif';ctx.textAlign='center';ctx.fillText('JMP',x+w/2,y+h+12);}
+}
+
+function drawOrb(ctx,x,y,col,lab,fr){
+  const p=Math.sin(fr*.08+x*.04)*2;
+  // sparkle ring
+  ctx.globalAlpha=.5+Math.sin(fr*.12+x)*.2;
+  ctx.strokeStyle=col+'55';ctx.lineWidth=1;ctx.beginPath();ctx.arc(x,y+p,14+Math.sin(fr*.1+x)*2,0,Math.PI*2);ctx.stroke();
+  ctx.globalAlpha=1;
+  ctx.fillStyle='rgba(0,0,0,0.13)';ctx.beginPath();ctx.ellipse(x+2,y+10+2,10,4,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=col+'bb';ctx.beginPath();ctx.arc(x,y+p,10,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle=col;ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,y+p,10,0,Math.PI*2);ctx.stroke();
+  ctx.fillStyle='rgba(255,255,255,.65)';ctx.beginPath();ctx.ellipse(x-3,y+p-3,3.5,2.5,-.5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#fff';ctx.font='bold 7px monospace';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(lab,x,y+p);
+}
+
+function drawPup(ctx,x,y,pup,fr){
+  const p=Math.sin(fr*.1+x*.03)*3,spin=fr*.03;
+  ctx.save();ctx.translate(x,y+p);ctx.rotate(Math.sin(spin)*.18);
+  ctx.fillStyle='rgba(0,0,0,0.13)';ctx.beginPath();ctx.ellipse(2,16,12,4,0,0,Math.PI*2);ctx.fill();
+  // glow
+  ctx.globalAlpha=.4+Math.sin(fr*.15)*.2;ctx.fillStyle=pup.col;ctx.beginPath();ctx.arc(0,0,20,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;
+  ctx.fillStyle=pup.col;ctx.beginPath();rs(x*3);pPath(ctx,-12,-12,24,24,6);ctx.fill();
+  ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
+  ctx.fillStyle='#fff';ctx.font='bold 8px monospace';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(pup.label,0,0);
+  ctx.restore();
+}
+
+function drawPlat(ctx,x,y,w,h,col){
+  rs(Math.round(x*3+y*7));
+  pRect(ctx,x,y,w,h,col,true,6);
+  ctx.strokeStyle='rgba(0,0,0,.07)';ctx.lineWidth=.8;
+  for(let i=1;i<3;i++){ctx.beginPath();ctx.moveTo(x+4,y+h*i/3+sr(2));ctx.lineTo(x+w-4,y+h*i/3+sr(2));ctx.stroke();}
+}
+
+/* ════════════════════════════════════════════
+   BACKGROUND (parallax + ambient life)
+   ════════════════════════════════════════════ */
+function drawBG(ph,wx,fr){
+  const p=PH[ph];
+  // sky gradient
+  const grad=g.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,p.sky);grad.addColorStop(1,p.h2);
+  g.fillStyle=grad;g.fillRect(0,0,W,H);
+
+  // sun/moon glow
+  const gx=520-((wx*.05)%200),gy=80;
+  g.globalAlpha=.5;g.fillStyle=p.deco+'33';g.beginPath();g.arc(gx,gy,46,0,Math.PI*2);g.fill();
+  g.globalAlpha=.7;g.fillStyle='#ffffffaa';g.beginPath();g.arc(gx,gy,30,0,Math.PI*2);g.fill();g.globalAlpha=1;
+
+  for(let i=0;i<16;i++){
+    const sx=((i*173+wx*.08)%(W+200)+W+200)%(W+200)-100;
+    const sy=15+(i*57)%160;
+    g.fillStyle=p.col+'55';g.beginPath();g.arc(sx,sy,2,0,Math.PI*2);g.fill();
+  }
+
+  rs(ph*100);g.fillStyle=p.h2;g.beginPath();g.moveTo(-10,H);
+  for(let x=0;x<W+100;x+=38){const ox=((x-wx*.18)%(W+300)+W+300)%(W+300)-100;g.lineTo(ox,H-100+sr(35));}
+  g.lineTo(W,H);g.closePath();g.fill();
+
+  rs(ph*200+7);g.fillStyle=p.h1;g.beginPath();g.moveTo(-10,H);
+  for(let x=0;x<W+100;x+=46){const ox=((x-wx*.45)%(W+350)+W+350)%(W+350)-100;g.lineTo(ox,H-65+sr(25));}
+  g.lineTo(W,H);g.closePath();g.fill();
+
+  for(let i=0;i<5;i++){
+    const cx=((i*190+fr*.25-wx*.13)%(W+250)+W+250)%(W+250)-100;
+    const cy=35+i*32;rs(i*77+ph*13);
+    pRect(g,cx,cy,85+sr(15)*2,26+sr(6)*2,'rgba(255,255,255,.6)',false,8);
+  }
+
+  // ambient floating motes (drift up + sway)
+  for(const a of ambient){
+    g.globalAlpha=a.al;g.fillStyle=p.deco;
+    g.beginPath();g.arc(a.x+Math.sin(fr*.03+a.ph)*8,a.y,a.r,0,Math.PI*2);g.fill();
+  }
+  g.globalAlpha=1;
+
+  // swaying decor flowers
+  for(let i=0;i<9;i++){
+    const fx=((i*220+500-wx*.85)%(W+450)+W+450)%(W+450)-100;
+    const sway=Math.sin(fr*.05+i)*3;
+    const fy=GY-38;g.fillStyle=p.deco+'99';
+    g.save();g.translate(fx,fy);g.rotate(sway*.02);
+    g.beginPath();
+    for(let k=0;k<5;k++){const a=(k/5)*Math.PI*2-Math.PI/2;const r=k%2===0?9:4;if(k===0)g.moveTo(Math.cos(a)*r,Math.sin(a)*r);else g.lineTo(Math.cos(a)*r,Math.sin(a)*r);}
+    g.closePath();g.fill();
+    g.fillStyle='#fff8';g.beginPath();g.arc(0,0,2.5,0,Math.PI*2);g.fill();
+    g.restore();
+  }
+
+  rs(ph*17);pRect(g,-4,GY,W+12,H-GY+4,p.gnd,false,4);
+  g.fillStyle=p.gt;g.fillRect(0,GY,W,7);
+  g.strokeStyle='rgba(0,0,0,.06)';g.lineWidth=.7;
+  for(let i=0;i<8;i++){g.beginPath();g.moveTo(((i*90-wx*.2)%W+W)%W,GY+10);g.lineTo(((i*90+60-wx*.2)%W+W)%W,GY+16);g.stroke();}
+}
+
+/* ════════════════════════════════════════════
+   HUD
+   ════════════════════════════════════════════ */
+function drawHUD(){
+  const p=PH[phase];
+  o.clearRect(0,0,W,H);
+
+  for(let i=0;i<3;i++){
+    o.fillStyle=i<lives?'#e74c3c':'rgba(0,0,0,0.15)';
+    const beat=i<lives?1+Math.sin(frame*.15+i)*.08:1;
+    o.save();o.translate(18+i*28,24);o.scale(beat,beat);
+    o.font='22px Georgia';o.textAlign='center';o.fillText('♥',0,8);o.restore();
+  }
+
+  rs(55);pRect(o,W/2-64,6,128,32,PH[phase].plat,false,6);
+  o.fillStyle='#333';o.font='bold 13px Georgia,serif';o.textAlign='center';
+  o.fillText('SCORE  '+score,W/2,27);
+
+  o.fillStyle='rgba(0,0,0,0.35)';o.font='11px Georgia,serif';o.textAlign='center';
+  o.fillText('BEST '+hiScore,W/2,50);
+
+  for(let i=0;i<4;i++){
+    const col=i<=phase?PH[i].col:'#ccc';
+    o.fillStyle=col;o.beginPath();o.arc(W-76+i*20,18,i===phase?8:5,0,Math.PI*2);o.fill();
+    o.strokeStyle='#fff';o.lineWidth=1.5;o.beginPath();o.arc(W-76+i*20,18,i===phase?8:5,0,Math.PI*2);o.stroke();
+  }
+  o.fillStyle='#333';o.font='9px Georgia,serif';o.textAlign='center';
+  o.fillText(PH[phase].name.toUpperCase(),W-76+phase*20,32);
+
+  if(player&&player.pup){
+    const pu=PUPS.find(p=>p.type===player.pup);
+    if(pu){
+      rs(11);pRect(o,10,40,80,22,pu.col+'44',false,5);
+      o.fillStyle=pu.col;o.font='bold 11px Georgia,serif';o.textAlign='center';
+      o.fillText(pu.label+' ACTIVE',50,55);
+      const t=player.pupTime/180;
+      o.fillStyle=pu.col+'66';o.fillRect(12,60,76*t,4);
+    }
+  }
+
+  const prog=Math.min((worldX/phaseLen)*W,W);
+  o.fillStyle='rgba(0,0,0,0.13)';o.fillRect(0,H-8,W,8);
+  o.fillStyle=p.col;o.fillRect(0,H-8,prog,8);
+  o.fillStyle='rgba(255,255,255,.5)';o.fillRect(prog-2,H-8,2,8);
+
+  if(player&&player.mult>1){
+    o.fillStyle='#f44336';o.font='bold 14px Georgia,serif';o.textAlign='right';
+    o.fillText('x'+player.mult,W-16,54);
+  }
+}
+
+/* ════════════════════════════════════════════
+   PARTICLES / FX
+   ════════════════════════════════════════════ */
+function spawnParts(x,y,col,n,big){
+  for(let i=0;i<(n||8);i++)parts.push({x,y,vx:(Math.random()-.5)*(big?7:5),vy:-(Math.random()*(big?6:4)+1),life:1,col,r:(big?6:4)*Math.random()+2});
+}
+function drawParts(){
+  for(const p of parts){g.globalAlpha=p.life;g.fillStyle=p.col;g.beginPath();g.arc(p.x,p.y,p.r*p.life,0,Math.PI*2);g.fill();}
+  g.globalAlpha=1;
+}
+function shake(mag,dur){shakeMag=mag;shakeFrames=dur;}
+function applyShake(){if(shakeFrames>0){g.save();g.translate((Math.random()-.5)*shakeMag,(Math.random()-.5)*shakeMag);shakeFrames--;if(shakeFrames<=0)shakeMag=0;}}
+function restoreShake(){if(shakeFrames>0||shakeMag>0)g.restore();}
+
+let floatTexts=[];
+function floatTxt(x,y,txt,col){floatTexts.push({x,y,txt,col,life:1});}
+function drawFloats(){
+  for(const f of floatTexts){
+    g.globalAlpha=f.life;g.fillStyle=f.col;g.font='bold 13px Georgia,serif';g.textAlign='center';
+    g.fillText(f.txt,f.x,f.y);
+  }
+  g.globalAlpha=1;
+}
+function doFlash(col){flash=1;flashCol=col;}
+
+/* ════════════════════════════════════════════
+   JUMP / SPAWN
+   ════════════════════════════════════════════ */
+function doJump(){player.vy=-14;player.onGround=false;player.coyote=0;player.djAvail=true;shake(2,4);SFX.jump();spawnParts(player.x+14,player.y+62,PH[phase].gt,5);}
+
+function spawnPhase(){
+  worldX=0;frame=0;
+  player={x:80,y:GY-70,w:28,h:65,vy:0,vx:0,onGround:false,coyote:0,invincible:0,pup:null,pupTime:0,djAvail:false,runF:0,mult:1,dir:1};
+  plats=[];orbs=[];monsters=[];parts=[];powerups=[];floatTexts=[];
+  ambient=[];for(let i=0;i<22;i++)ambient.push({x:Math.random()*W,y:Math.random()*H*.8,r:1+Math.random()*2.5,al:.2+Math.random()*.4,ph:Math.random()*7});
+  const spacing=280;
+  for(let i=0;i<15;i++){
+    const px=260+i*spacing+Math.random()*60;
+    const py=GY-90-Math.random()*130;
+    const pw=70+Math.random()*80;
+    plats.push({x:px,y:py,w:pw,h:18});
+    if(Math.random()>.45)orbs.push({x:px+pw/2,y:py-28,col:PH[phase].orb,lab:['E2','FSH','LH','P4'][phase]});
+  }
+  for(let i=0;i<28;i++)orbs.push({x:150+i*130+Math.random()*60,y:GY-55-Math.random()*155,col:PH[phase].orb,lab:['E2','FSH','LH','P4'][phase]});
+  for(let i=0;i<14;i++){
+    const type=Math.random()>.6?'jump':'walk';
+    monsters.push({x:340+i*240+Math.random()*80,y:GY-46,w:36,h:36,alive:true,dx:-(1.6+phase*.25),type,jumpT:0});
+  }
+  for(let i=0;i<3;i++)powerups.push({x:400+i*1100+Math.random()*200,y:GY-80-Math.random()*100,pup:PUPS[Math.floor(Math.random()*4)],taken:false});
+  STATE='play';show(null);transition=1;doFlash(PH[phase].sky);startMusic();
+}
+
+/* ════════════════════════════════════════════
+   UPDATE
+   ════════════════════════════════════════════ */
+function update(){
+  frame++;
+  if(player.invincible>0)player.invincible--;
+  if(player.pupTime>0){player.pupTime--;if(player.pupTime<=0){player.pup=null;player.mult=1;}}
+
+  // ambient drift
+  for(const a of ambient){a.y-=.25;if(a.y<-5){a.y=H*.85;a.x=Math.random()*W;}}
+
+  const spd=player.pup==='speed'?7:5;
+  if(keys['ArrowRight']){player.vx=Math.min(player.vx+1.1,spd);player.dir=1;}
+  else if(keys['ArrowLeft']){player.vx=Math.max(player.vx-1.1,-spd);player.dir=-1;}
+  else player.vx*=.78;
+
+  player.vy=Math.min(player.vy+.62,16);
+  player.x+=player.vx;player.y+=player.vy;
+  worldX+=2.8+phase*.35;
+  if(player.vx!==0)player.runF++;
+
+  // speed trail
+  if(player.pup==='speed'&&frame%3===0)spawnParts(player.x+14,player.y+40,'#00bcd4',2);
+
+  if(player.y+player.h>=GY){player.y=GY-player.h;player.vy=0;player.onGround=true;player.coyote=8;player.djAvail=true;}
+  else{if(player.onGround)player.coyote=8;player.onGround=false;if(player.coyote>0)player.coyote--;}
+  if(player.x<10)player.x=10;
+
+  for(const pl of plats){
+    const rx=pl.x-worldX+W*.18;
+    if(player.vy>0&&player.x+player.w-4>rx&&player.x+4<rx+pl.w&&player.y+player.h>pl.y&&player.y+player.h<pl.y+pl.h+12){
+      player.y=pl.y-player.h;player.vy=0;player.onGround=true;player.coyote=8;player.djAvail=true;
+    }
+  }
+
+  const pts=player.mult*10;
+  for(const ob of orbs){
+    if(ob.taken)continue;
+    const ox=ob.x-worldX+W*.18;
+    if(Math.abs(ox-player.x-14)<22&&Math.abs(ob.y-(player.y+18))<22){
+      ob.taken=true;score+=pts;floatTxt(ox,ob.y-10,'+'+pts,PH[phase].orb);
+      spawnParts(ox,ob.y,PH[phase].orb,6);frame%2?SFX.orb():SFX.orb2();
+    }
+  }
+
+  for(const pu of powerups){
+    if(pu.taken)continue;
+    const px=pu.x-worldX+W*.18;
+    if(Math.abs(px-player.x-14)<26&&Math.abs(pu.y-(player.y+20))<26){
+      pu.taken=true;player.pup=pu.pup.type;player.pupTime=180;
+      if(pu.pup.type==='shield')player.invincible=200;
+      if(pu.pup.type==='x2')player.mult=2;
+      floatTxt(px,pu.y-14,pu.pup.desc,pu.pup.col);
+      spawnParts(px,pu.y,pu.pup.col,14,true);shake(3,6);SFX.pup();doFlash(pu.pup.col);
+    }
+  }
+
+  for(const m of monsters){
+    if(!m.alive)continue;
+    const mx=m.x-worldX+W*.18;
+    m.x+=m.dx;
+    if(m.type==='jump'){m.jumpT++;if(m.jumpT%90===0){m.vy=(m.vy||0)-10;}m.vy=(m.vy||0)+.6;m.y+=m.vy;if(m.y>=GY-m.h){m.y=GY-m.h;m.vy=0;}}
+    if(player.invincible<=0&&player.pup!=='shield'&&player.x+player.w-4>mx&&player.x+4<mx+m.w&&player.y+player.h>m.y&&player.y<m.y+m.h){
+      if(player.vy>2&&player.y+player.h<m.y+m.h*.5){
+        m.alive=false;score+=25*player.mult;player.vy=-12;
+        floatTxt(mx+m.w/2,m.y-10,'+'+25*player.mult,'#fff');
+        spawnParts(mx+m.w/2,m.y+m.h/2,PH[phase].col,14,true);shake(4,8);SFX.stomp();
+      } else {
+        lives--;player.invincible=90;shake(6,10);SFX.hit();doFlash('#ff5050');
+        spawnParts(player.x+14,player.y+20,'#ff0000',10,true);
+        if(lives<=0){hiScore=Math.max(hiScore,score);endGame(false);return;}
+      }
+    }
+  }
+
+  for(const p of parts){p.x+=p.vx;p.y+=p.vy;p.vy+=.22;p.life-=.04;}
+  parts=parts.filter(p=>p.life>0);
+  for(const f of floatTexts){f.y-=.8;f.life-=.025;}
+  floatTexts=floatTexts.filter(f=>f.life>0);
+
+  if(worldX>=phaseLen){
+    score+=200;hiScore=Math.max(hiScore,score);
+    SFX.phase();stopMusic();
+    showQuiz();   // educational quiz, then cutscene / next phase
+  }
+}
+
+/* ════════════════════════════════════════════
+   QUIZ SCREEN (educational, between phases)
+   ════════════════════════════════════════════ */
+function showQuiz(){
+  STATE='quiz';
+  const qz=QUIZ[phase];
+  const p=PH[phase];
+  const el=document.getElementById('s-quiz');
+  el.style.background=p.sky;
+  el.innerHTML=`
+    <div class="popin" style="background:rgba(255,249,240,0.98);border-radius:10px;padding:28px 34px;max-width:500px;box-shadow:5px 5px 0 rgba(0,0,0,0.15)">
+      <div style="font-size:14px;letter-spacing:2px;color:${p.col};font-weight:700;text-transform:uppercase;margin-bottom:6px">✓ ${p.name} complete · +200</div>
+      <div style="font-size:16px;color:#999;margin-bottom:16px">Pop Quiz — answer for <strong style="color:${p.col}">+100</strong> bonus!</div>
+      <div style="font-size:23px;color:#333;font-weight:700;line-height:1.4;margin-bottom:18px">${qz.q}</div>
+      <div id="qopts"></div>
+      <div id="qwhy" style="display:none;font-size:16px;color:#555;line-height:1.6;margin-top:16px;background:#fff;border-radius:6px;padding:14px"></div>
+      <button id="qnext" class="pbtn" style="background:${p.col};margin-top:18px;display:none">Continue →</button>
+    </div>`;
+  const opts=document.getElementById('qopts');
+  qz.a.forEach((ans,i)=>{
+    const b=document.createElement('button');
+    b.className='qbtn';b.textContent=ans;
+    b.onclick=()=>{
+      if(opts.dataset.done)return;opts.dataset.done='1';
+      const correct=i===qz.c;
+      if(correct){b.classList.add('right');score+=100;hiScore=Math.max(hiScore,score);SFX.right();}
+      else{b.classList.add('wrong');opts.children[qz.c].classList.add('right');SFX.wrong();}
+      const why=document.getElementById('qwhy');
+      why.style.display='block';
+      why.innerHTML=(correct?'<strong style="color:#2e7d32">Correct! +100 </strong>':'<strong style="color:#c0392b">Not quite. </strong>')+qz.why;
+      document.getElementById('qnext').style.display='inline-block';
+    };
+    opts.appendChild(b);
+  });
+  document.getElementById('qnext').onclick=()=>{SFX.click();phase++;if(phase>=PH.length)endGame(true);else showCutscene();};
+  show('s-quiz');
+}
+
+/* ════════════════════════════════════════════
+   CUTSCENE (story + fact for the NEW phase)
+   ════════════════════════════════════════════ */
+function showCutscene(){
+  STATE='cut';
+  const p=PH[phase];
+  const el=document.getElementById('s-cut');
+  el.style.background=p.sky;
+  el.innerHTML=`
+    <canvas id="cut-c" width="640" height="480" style="position:absolute;top:0;left:0;z-index:0"></canvas>
+    <div style="position:relative;z-index:2;display:flex;flex-direction:column;align-items:center">
+      <div id="cut-card"></div>
+    </div>`;
+  const cc=document.getElementById('cut-c'),cx=cc.getContext('2d');
+  cx.fillStyle=p.sky;cx.fillRect(0,0,640,480);
+  rs(phase*33);pRect(cx,0,GY,W,H-GY+4,p.gnd,false,3);cx.fillStyle=p.gt;cx.fillRect(0,GY,W,7);
+  drawLuna(cx,295,GY-70,1,0,p.col,0,false);
+
+  const card=document.getElementById('cut-card');
+  card.className='popin';
+  card.style.cssText='background:rgba(255,249,240,0.97);border-radius:8px;padding:24px 34px;max-width:500px;box-shadow:4px 4px 0 rgba(0,0,0,0.15);margin-top:40px;text-align:center';
+  card.innerHTML=`
+    <div style="font-size:14px;letter-spacing:2px;color:${p.col};font-weight:700;margin-bottom:8px;text-transform:uppercase">Phase ${phase+1} of 4 — ${p.name} · ${p.days}</div>
+    <div style="font-size:20px;color:#333;line-height:1.6;white-space:pre-line;font-style:italic;margin-bottom:14px">"${p.story}"</div>
+    <div style="font-size:16px;color:#555;line-height:1.6;margin-bottom:12px">${p.fact}</div>
+    <div style="font-size:15px;color:${p.col};line-height:1.5;background:#fff;border-radius:6px;padding:11px 14px;margin-bottom:18px"><strong>💡 Did you know?</strong> ${p.did}</div>
+    <button class="pbtn" style="background:${p.col}" onclick="SFX.click();spawnPhase()">Begin Phase →</button>`;
+  show('s-cut');
+}
+
+/* ════════════════════════════════════════════
+   END GAME
+   ════════════════════════════════════════════ */
+function endGame(win){
+  STATE=win?'win':'dead';stopMusic();
+  win?SFX.win():SFX.lose();
+  const sid=win?'s-win':'s-dead';
+  const el=document.getElementById(sid);
+  const bg=win?PH[3].sky:'#fce4ec';
+  el.style.background=bg;
+  el.innerHTML=`
+    <canvas id="end-c" width="640" height="480" style="position:absolute;top:0;left:0;z-index:0"></canvas>
+    <div style="position:relative;z-index:2;display:flex;flex-direction:column;align-items:center">
+      <div id="end-card"></div>
+    </div>`;
+  const ec=document.getElementById('end-c'),ex=ec.getContext('2d');
+  ex.fillStyle=bg;ex.fillRect(0,0,640,480);
+  const gcol=win?'#2e7d32':'#c0392b';
+  rs(win?77:33);pRect(ex,0,GY,W,H-GY+4,win?PH[3].gnd:'#e8a0b4',false,3);
+  drawLuna(ex,295,GY-70,1,0,gcol,0,false);
+  if(win){
+    const cols=['#e91e63','#2e7d32','#f9a825','#7b1fa2'];
+    for(let i=0;i<40;i++){ex.fillStyle=cols[i%4];rs(i*17);ex.save();ex.translate(50+Math.random()*540,20+Math.random()*200);ex.rotate(Math.random()*Math.PI);ex.fillRect(-5,-3,10,6);ex.restore();}
+  }
+  const card=document.getElementById('end-card');
+  card.className='popin';
+  card.style.cssText='background:rgba(255,249,240,0.97);border-radius:8px;padding:24px 32px;max-width:390px;box-shadow:4px 4px 0 rgba(0,0,0,0.15);margin-top:44px;text-align:center';
+  card.innerHTML=win
+    ?`<div style="font-size:28px;margin-bottom:8px">🌸</div>
+       <div style="font-size:20px;font-weight:700;color:#2e7d32;margin-bottom:4px">Cycle Complete!</div>
+       <div style="font-size:13px;color:#555;margin-bottom:12px;line-height:1.7">You guided Luna through all 4 phases of the menstrual cycle.<br>Her body — like yours — is truly amazing.</div>
+       <div style="font-size:24px;font-weight:700;color:#2e7d32;margin-bottom:2px">${score} pts</div>
+       <div style="font-size:11px;color:#888;margin-bottom:8px">BEST: ${hiScore}</div>
+       ${PH.map(p=>`<div style="font-size:11px;color:${p.col};font-weight:700;line-height:1.5">✓ ${p.name} — ${p.days}</div>`).join('')}
+       <button class="pbtn" style="background:#2e7d32;margin-top:14px" onclick="SFX.click();startGame()">Play Again</button>`
+    :`<div style="font-size:28px;margin-bottom:8px">💔</div>
+       <div style="font-size:20px;font-weight:700;color:#c0392b;margin-bottom:4px">Luna stumbled...</div>
+       <div style="font-size:13px;color:#555;margin-bottom:12px;line-height:1.6">Reached <strong>${PH[phase].name}</strong> phase.<br>Score: <strong>${score}</strong> &nbsp;|&nbsp; Best: <strong>${hiScore}</strong></div>
+       <button class="pbtn" style="background:#c0392b" onclick="SFX.click();startGame()">Try Again</button>`;
+  show(sid);
+}
+
+/* ════════════════════════════════════════════
+   TITLE
+   ════════════════════════════════════════════ */
+function initTitle(){
+  STATE='title';
+  const el=document.getElementById('s-title');
+  el.style.background='#fdf6ee';
+  el.innerHTML=`
+    <canvas id="tc" width="640" height="480" style="position:absolute;top:0;left:0;z-index:0"></canvas>
+    <div style="position:relative;z-index:2;display:flex;flex-direction:column;align-items:center">
+      <div id="tcontent"></div>
+    </div>`;
+  drawTitleCanvas();
+  document.getElementById('tcontent').innerHTML=`<button class="pbtn" style="background:#c2185b;margin-top:14px;font-size:16px;padding:14px 40px" onclick="SFX.click();startGame()">▶ PLAY</button>`;
+  show('s-title');
+}
+function drawTitleCanvas(){
+  const tc=document.getElementById('tc');if(!tc)return;
+  const tx=tc.getContext('2d');
+  tx.fillStyle='#fdf6ee';tx.fillRect(0,0,640,480);
+  [{c:'#e74c3c',x:60},{c:'#3498db',x:220},{c:'#2ecc71',x:380},{c:'#f39c12',x:540}].forEach(p=>{
+    tx.fillStyle='rgba(0,0,0,0.2)';tx.beginPath();tx.arc(p.x+2,62,9,0,Math.PI*2);tx.fill();
+    tx.fillStyle=p.c;tx.beginPath();tx.arc(p.x,60,9,0,Math.PI*2);tx.fill();
+    tx.fillStyle='rgba(255,255,255,0.4)';tx.beginPath();tx.arc(p.x-2,57,3,0,Math.PI*2);tx.fill();
+  });
+  rs(5);pRect(tx,100,76,440,108,'#fff',true,12);
+  tx.fillStyle='#c2185b';tx.font='bold 56px Georgia,serif';tx.textAlign='center';tx.textBaseline='middle';tx.fillText('FLOW',320,118);
+  tx.fillStyle='#777';tx.font='italic 14px Georgia,serif';tx.fillText('Learn the menstrual cycle · An adventure with Luna',320,156);
+  PH.forEach((p,i)=>{rs(i*29);pRect(tx,62+i*132,206,116,62,p.gnd,true,8);tx.fillStyle='#fff';tx.font='bold 11px Georgia,serif';tx.textAlign='center';tx.fillText(p.name,120+i*132,242);tx.fillStyle='rgba(255,255,255,.75)';tx.font='10px Georgia,serif';tx.fillText(p.days,120+i*132,258);});
+  drawLuna(tx,292,290,1,0,'#c2185b',frame*0,false);
+  rs(9);pRect(tx,120,360,400,82,'#fffde7',true,8);
+  tx.fillStyle='#555';tx.font='13px Georgia,serif';tx.textAlign='center';
+  tx.fillText('← → move    ·    Space / ↑ jump    ·    M mute',320,384);
+  tx.fillText('Stomp worries · Collect hormone orbs · Grab power-ups',320,404);
+  tx.fillText('Answer the quiz between phases for bonus points!',320,424);
+  if(hiScore>0){tx.fillStyle='#c2185b';tx.font='bold 13px Georgia,serif';tx.fillText('BEST: '+hiScore+' pts',320,446);}
+}
+
+function startGame(){phase=0;score=0;lives=3;frame=0;worldX=0;audio();showCutscene();}
+
+/* ════════════════════════════════════════════
+   MAIN LOOP
+   ════════════════════════════════════════════ */
+function loop(){
+  frame++;
+  if(STATE==='title'){drawTitleCanvas();}
+  if(STATE==='play'){
+    applyShake();
+    drawBG(phase,worldX,frame);
+    for(const pl of plats){const rx=pl.x-worldX+W*.18;if(rx<-130||rx>W+130)continue;drawPlat(g,rx,pl.y,pl.w,pl.h,PH[phase].plat);}
+    for(const ob of orbs){if(ob.taken)continue;const ox=ob.x-worldX+W*.18;if(ox<-30||ox>W+30)continue;drawOrb(g,ox,ob.y,ob.col,ob.lab,frame);}
+    for(const pu of powerups){if(pu.taken)continue;const px=pu.x-worldX+W*.18;if(px<-30||px>W+30)continue;drawPup(g,px,pu.y,pu.pup,frame);}
+    for(const m of monsters){if(!m.alive)continue;const mx=m.x-worldX+W*.18;if(mx<-80||mx>W+80)continue;drawMonster(g,mx,m.y,m.w,m.h,PH[phase].mon,frame,m.type);}
+    drawLuna(g,player.x,player.y,player.dir,player.invincible,PH[phase].orb,player.runF,player.vy<-3);
+    drawParts();drawFloats();
+    restoreShake();
+    drawHUD();
+    // flash overlay
+    if(flash>0){g.globalAlpha=flash*.5;g.fillStyle=flashCol;g.fillRect(0,0,W,H);g.globalAlpha=1;flash-=.06;}
+    update();
+  }
+  requestAnimationFrame(loop);
+}
+
+/* ════════════════════════════════════════════
+   FIT TO SCREEN — scale the whole game (canvas
+   + all text) to fill the viewport
+   ════════════════════════════════════════════ */
+function fit(){
+  const wrap=document.getElementById('wrap');
+  const pad=24;
+  const s=Math.min((window.innerWidth-pad)/W,(window.innerHeight-pad)/H);
+  wrap.style.transform='scale('+s+')';
+}
+window.addEventListener('resize',fit);
+fit();
+
+initTitle();loop();
+</script>
+</body>
+</html>
