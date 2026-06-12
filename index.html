@@ -3,12 +3,13 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>FLOW — Luna's Menstrual Cycle Adventure</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%;height:100%;overflow:hidden}
-body{background:#e8e0d0;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:'Georgia',serif}
-#wrap{position:relative;width:640px;height:480px;overflow:hidden;border-radius:8px;box-shadow:6px 6px 0 rgba(0,0,0,0.18);transform-origin:center center}
+body{background:#e8e0d0;font-family:'Georgia',serif}
+#wrap{position:absolute;top:50%;left:50%;width:640px;height:480px;overflow:hidden;border-radius:8px;box-shadow:6px 6px 0 rgba(0,0,0,0.18);transform-origin:center center;transform:translate(-50%,-50%)}
 canvas{display:block;position:absolute;top:0;left:0}
 #gc{z-index:1}
 #oc{z-index:2;pointer-events:none}
@@ -26,6 +27,19 @@ canvas{display:block;position:absolute;top:0;left:0}
 #mute:hover{background:#fff}
 @keyframes pop{0%{transform:scale(.6);opacity:0}60%{transform:scale(1.08)}100%{transform:scale(1);opacity:1}}
 .popin{animation:pop .35s ease-out both}
+/* ── On-screen touch controls (mobile) ── */
+#touch{display:none;position:absolute;top:0;left:0;width:640px;height:480px;z-index:5;pointer-events:none}
+.tbtn{position:absolute;bottom:18px;border:none;border-radius:50%;background:rgba(255,255,255,0.42);box-shadow:2px 3px 0 rgba(0,0,0,0.18);color:#c2185b;font-size:44px;font-weight:700;line-height:1;display:flex;align-items:center;justify-content:center;pointer-events:auto;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+.tbtn:active{background:rgba(255,255,255,0.8);transform:scale(.94)}
+.tbtn.move{width:86px;height:86px}
+#tl{left:18px}
+#tr{left:118px}
+.tbtn.jump{width:120px;height:120px;right:18px;background:rgba(233,30,99,0.32);color:#fff;font-size:30px;font-family:'Georgia',serif}
+/* ── Rotate-to-landscape prompt ── */
+#rotate{display:none;position:fixed;inset:0;z-index:50;background:#fdf6ee;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:30px}
+#rotate.on{display:flex}
+#rphone{font-size:64px;margin-bottom:14px;animation:rot 1.8s ease-in-out infinite}
+@keyframes rot{0%,35%{transform:rotate(0)}55%,100%{transform:rotate(-90deg)}}
 </style>
 </head>
 <body>
@@ -40,6 +54,17 @@ canvas{display:block;position:absolute;top:0;left:0}
     <div class="scr" id="s-dead"></div>
     <div class="scr" id="s-win"></div>
   </div>
+  <div id="touch">
+    <button id="tl" class="tbtn move">◀</button>
+    <button id="tr" class="tbtn move">▶</button>
+    <button id="tj" class="tbtn jump">JUMP</button>
+  </div>
+</div>
+<div id="rotate">
+  <div id="rphone">📱</div>
+  <div style="font-size:22px;font-weight:700;color:#c2185b;margin-bottom:8px">Rotate your phone</div>
+  <div style="font-size:15px;color:#666;line-height:1.6;max-width:300px;margin-bottom:22px">FLOW plays best sideways (landscape).<br>Turn your device for the full screen.</div>
+  <button class="pbtn" style="background:#c2185b" onclick="document.getElementById('rotate').classList.remove('on');window._noRotate=1">Play in portrait anyway</button>
 </div>
 <script>
 const W=640,H=480;
@@ -215,21 +240,36 @@ const GY=H-68;
 /* ════════════════════════════════════════════
    INPUT
    ════════════════════════════════════════════ */
+function pressJump(){
+  if(STATE!=='play'||!player)return;
+  if(player.onGround||player.coyote>0){doJump();}
+  else if(player.pup==='jump'&&player.djAvail){player.vy=-13;player.djAvail=false;SFX.djump();spawnParts(player.x+14,player.y+50,'#9c27b0',8);}
+}
 document.addEventListener('keydown',e=>{
   if(e.code==='KeyM'){muted=!muted;document.getElementById('mute').textContent=muted?'🔇':'🔊';if(!muted)audio();}
   if(!keyP[e.code]){
     keyP[e.code]=true;
-    if(STATE==='play'){
-      if(e.code==='Space'||e.code==='ArrowUp'){
-        if(player.onGround||player.coyote>0){doJump();}
-        else if(player.pup==='jump'&&player.djAvail){player.vy=-13;player.djAvail=false;SFX.djump();spawnParts(player.x+14,player.y+50,'#9c27b0',8);}
-      }
-    }
+    if(e.code==='Space'||e.code==='ArrowUp')pressJump();
   }
   keys[e.code]=true;
   if(['Space','ArrowUp','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();
 });
 document.addEventListener('keyup',e=>{keys[e.code]=false;keyP[e.code]=false;});
+
+/* ── Touch controls (mobile): tap JUMP / tap anywhere to jump, hold ◀ ▶ to move ── */
+const isTouch=window.matchMedia('(pointer:coarse)').matches||('ontouchstart' in window);
+function bindHold(id,code){
+  const el=document.getElementById(id);
+  const dn=e=>{e.preventDefault();e.stopPropagation();keys[code]=true;audio();};
+  const up=e=>{e.preventDefault();e.stopPropagation();keys[code]=false;};
+  el.addEventListener('pointerdown',dn);el.addEventListener('pointerup',up);
+  el.addEventListener('pointerleave',up);el.addEventListener('pointercancel',up);
+}
+bindHold('tl','ArrowLeft');bindHold('tr','ArrowRight');
+const tj=document.getElementById('tj');
+tj.addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();pressJump();});
+// Tap anywhere on the play field to jump too
+document.getElementById('wrap').addEventListener('pointerdown',()=>{if(STATE==='play')pressJump();});
 
 function show(id){document.querySelectorAll('.scr').forEach(s=>s.classList.remove('on'));if(id)document.getElementById(id).classList.add('on');}
 
@@ -650,7 +690,7 @@ function showCutscene(){
     <div style="position:relative;z-index:2;display:flex;flex-direction:column;align-items:center">
       <div id="cut-card"></div>
     </div>`;
-  const cc=document.getElementById('cut-c'),cx=cc.getContext('2d');
+  const cc=document.getElementById('cut-c'),cx=cc.getContext('2d');hires(cc,cx);
   cx.fillStyle=p.sky;cx.fillRect(0,0,640,480);
   rs(phase*33);pRect(cx,0,GY,W,H-GY+4,p.gnd,false,3);cx.fillStyle=p.gt;cx.fillRect(0,GY,W,7);
   drawLuna(cx,295,GY-70,1,0,p.col,0,false);
@@ -682,7 +722,7 @@ function endGame(win){
     <div style="position:relative;z-index:2;display:flex;flex-direction:column;align-items:center">
       <div id="end-card"></div>
     </div>`;
-  const ec=document.getElementById('end-c'),ex=ec.getContext('2d');
+  const ec=document.getElementById('end-c'),ex=ec.getContext('2d');hires(ec,ex);
   ex.fillStyle=bg;ex.fillRect(0,0,640,480);
   const gcol=win?'#2e7d32':'#c0392b';
   rs(win?77:33);pRect(ex,0,GY,W,H-GY+4,win?PH[3].gnd:'#e8a0b4',false,3);
@@ -721,6 +761,7 @@ function initTitle(){
     <div style="position:relative;z-index:2;display:flex;flex-direction:column;align-items:center">
       <div id="tcontent"></div>
     </div>`;
+  const tc0=document.getElementById('tc');hires(tc0,tc0.getContext('2d'));
   drawTitleCanvas();
   document.getElementById('tcontent').innerHTML=`<button class="pbtn" style="background:#c2185b;margin-top:14px;font-size:16px;padding:14px 40px" onclick="SFX.click();startGame()">▶ PLAY</button>`;
   show('s-title');
@@ -752,8 +793,12 @@ function startGame(){phase=0;score=0;lives=3;frame=0;worldX=0;audio();showCutsce
 /* ════════════════════════════════════════════
    MAIN LOOP
    ════════════════════════════════════════════ */
+let _touchShown=null;
 function loop(){
   frame++;
+  // show on-screen controls only while playing, on touch devices
+  const want=isTouch&&STATE==='play';
+  if(want!==_touchShown){_touchShown=want;document.getElementById('touch').style.display=want?'block':'none';}
   if(STATE==='title'){drawTitleCanvas();}
   if(STATE==='play'){
     applyShake();
@@ -777,14 +822,29 @@ function loop(){
    FIT TO SCREEN — scale the whole game (canvas
    + all text) to fill the viewport
    ════════════════════════════════════════════ */
+let Q=2;
+function hires(canvas,ctx){
+  canvas.style.width=W+'px';canvas.style.height=H+'px';
+  canvas.width=Math.round(W*Q);canvas.height=Math.round(H*Q);
+  ctx.setTransform(Q,0,0,Q,0,0);
+}
 function fit(){
   const wrap=document.getElementById('wrap');
-  const pad=24;
+  const pad=window.innerWidth<720?6:24;
   const s=Math.min((window.innerWidth-pad)/W,(window.innerHeight-pad)/H);
-  wrap.style.transform='scale('+s+')';
+  wrap.style.transform='translate(-50%,-50%) scale('+s+')';
+  // On phones held upright, nudge to landscape (game is a side-scroller)
+  const portrait=window.innerHeight>window.innerWidth;
+  document.getElementById('rotate').classList.toggle('on',isTouch&&portrait&&!window._noRotate);
+  // Render at higher backing resolution so the scaled-up canvas stays crisp
+  const nq=Math.min(3,Math.max(1,Math.ceil((window.devicePixelRatio||1)*s)));
+  if(nq!==Q){
+    Q=nq;hires(gc,g);hires(oc,o);
+    const tc=document.getElementById('tc');if(tc)hires(tc,tc.getContext('2d'));
+  }
 }
 window.addEventListener('resize',fit);
-fit();
+fit();hires(gc,g);hires(oc,o);
 
 initTitle();loop();
 </script>
